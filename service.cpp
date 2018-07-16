@@ -17,18 +17,67 @@
 
 #include <service>
 #include <cstdio>
+#include <vector>
 #include <os>
 #include <kernel/pci_manager.hpp>
+#include <kernel/events.hpp>
 #include <hw/devices.hpp>
 #include <hw/pci_device.hpp>
 #include <virtio/virtio.hpp>
 
-#define IVSHMEM_VENDOR 0x11101af4
+#define POSIX_STRACE 1//for debug
+#define DEBUG_SMP 1
 
+#define IVSHMEM_VENDOR 0x11101af4
+#define INTR_VEC 1
 static uint16_t ivshmem_addr;
 static hw::PCI_Device *pci_dev;
-static uint16_t ivshmem_iobase;
 static uint8_t current_cpu;
+static std::vector<uint8_t> irqs;
+static uintptr_t shm_base;
+static int vm_id;
+
+
+// bar 0 structure
+struct ctl_reg_t
+{
+  uint32_t intrMask;
+  uint32_t intrStatus;
+  uint32_t IVPosition;
+  uint32_t doorbell;
+}__attribute__((packed));
+
+static struct ctl_reg_t * ctl_reg;
+
+int read_shm()
+{
+  return *(volatile uint32_t*)shm_base;
+}
+
+void write_shm(uint32_t val)
+{
+  *(volatile uint32_t*)shm_base = val;
+}
+
+uint16_t read_vmid()
+{
+  return ctl_reg->IVPosition;
+  // return *(volatile uint16_t*)(ctl_base + IVPosition);
+}
+
+void send_intr(int peer_id){
+  uint32_t msg = ((peer_id & 0xffff) << 16) + (INTR_VEC & 0xffff);
+  ctl_reg->doorbell = msg;
+  printf("successfully send interrupt to vm %d\n", peer_id);
+}
+
+void intr_handler(){
+  printf("enter interrupt\n");
+  int peer_id = read_shm();
+  write_shm(8888);
+  send_intr(peer_id);
+  fflush(stdout);
+}
 
 void init_ivshmem()
 {
@@ -57,6 +106,20 @@ void init_ivshmem()
       // find BARs etc.
       pci_dev->probe_resources();
 
+      shm_base = pci_dev->get_bar(2);
+      ctl_reg = (struct ctl_reg_t *)pci_dev->get_bar(0);
+
+      /* set all masks to on */
+      // ctl_reg->intrMask = 0xffffffff;
+
+      printf("shm_base: 0x%lx\nctl_base: 0x%lx\n", shm_base, (uintptr_t)ctl_reg);
+      // print out shm content
+      printf("shared memory content: %d\n", read_shm());
+      vm_id = read_vmid();
+      printf("vm_id: %d\n", vm_id);
+      // test write shm function
+      write_shm(vm_id);
+
       // initialize MSI-X if available
       if (pci_dev->msix_cap())
       {
@@ -68,14 +131,15 @@ void init_ivshmem()
           current_cpu = SMP::cpu_id();
           INFO2("[x] Current_cpu: %d", current_cpu);
 
-          // // setup all the MSI-X vectors
-          // for (int i = 0; i < msix_vectors; i++)
-          // {
-          //   auto irq = Events::get().subscribe(nullptr);
-          //   dev.setup_msix_vector(current_cpu, IRQ_BASE + irq);
-          //   // store IRQ for later
-          //   this->irqs.push_back(irq);
-          // }
+          // only setup vec1, for testing purpose
+          // setup all the MSI-X vectors
+          for (int i = 0; i < msix_vectors; i++)
+          {
+            auto irq = Events::get().subscribe(&intr_handler);
+            pci_dev->setup_msix_vector(current_cpu, IRQ_BASE + irq);
+            // store IRQ for later
+            irqs.push_back(irq);
+          }
         }
         else
         INFO2("[ ] No MSI-X vectors");
@@ -83,8 +147,7 @@ void init_ivshmem()
         INFO2("[ ] No MSI-X vectors");
       }
 
-
-
+      // send_intr(0);
       delete pci_dev;
       return;
     }
