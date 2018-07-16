@@ -25,15 +25,11 @@
 #include <hw/pci_device.hpp>
 #include <virtio/virtio.hpp>
 
-#define POSIX_STRACE 1//for debug
-#define DEBUG_SMP 1
-
 #define IVSHMEM_VENDOR 0x11101af4
 #define INTR_VEC 1
 static uint16_t ivshmem_addr;
 static hw::PCI_Device *pci_dev;
 static uint8_t current_cpu;
-static std::vector<uint8_t> irqs;
 static uintptr_t shm_base;
 static int vm_id;
 
@@ -137,8 +133,6 @@ void init_ivshmem()
           {
             auto irq = Events::get().subscribe(&intr_handler);
             pci_dev->setup_msix_vector(current_cpu, IRQ_BASE + irq);
-            // store IRQ for later
-            irqs.push_back(irq);
           }
         }
         else
